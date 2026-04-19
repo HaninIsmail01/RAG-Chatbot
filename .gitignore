@@ -3,6 +3,9 @@
 .env.local
 .env.development.local
 
+# virtual environment
+.venv/
+
 # Logs
 *.log
 
