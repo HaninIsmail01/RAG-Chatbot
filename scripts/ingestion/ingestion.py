@@ -2,9 +2,14 @@
 
 import sys
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-# add the parent directory to the system path to allow imports from config and other modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
+# Load environment variables from .env file
+load_dotenv()
+
+# Resolves the project root regardless of OS or working directory
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # dataclass is used to create a configuration class for the ingestion process, 
 # which will hold all the necessary configuration parameters in a structured way.
@@ -15,7 +20,8 @@ Llama Parse was chosen to parse the document for its capaability to extract the 
 read the images (important because the provided guide contains multiple guidance images) from the pdf
 in a well structured manner with accuracy and with respect to its structure. 
 """
-from llama_parse import LlamaParse
+from llama_cloud import LlamaCloud
+from llama_index.core.schema import Document 
 
 """
 Llama index was chosen to orchestrate the ingestion process and populate the vector store 
@@ -56,10 +62,10 @@ from config.config import ( # Importing all the necessary configuration paramete
     QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
     LLAMA_INDEX_EMBED_MODEL_NAME,
+    LLAMA_CLOUD_API_KEY,
     FASTEMBED_CACHE_DIR,
-    LLAMAPARSE_API_KEY,
-    LLAMAPARSE_RESULT_TYPE,
-    LLAMAPARSE_PARSE_LANGUAGE,
+    LLAMA_PARSE_TIER,
+    LLAMA_PARSE_LANGUAGE,
     EMBED_DIMENSIONS,
     CHUNK_SIZE,
     CHUNK_OVERLAP,
@@ -80,11 +86,12 @@ class IngestionConfig:
     """
     qdrant_host: str = QDRANT_HOST
     qdrant_port: int = QDRANT_PORT
+    qdrant_url: str = QDRANT_HOST
     qdrant_api_key: str = QDRANT_API_KEY
-    qdrant_collection_name: str = QDRANT_COLLECTION_NAME
-    llamaparse_api_key: str = LLAMAPARSE_API_KEY
-    llamaparse_result_type: str = LLAMAPARSE_RESULT_TYPE
-    llamaparse_language: str = LLAMAPARSE_PARSE_LANGUAGE
+    collection_name: str = QDRANT_COLLECTION_NAME
+    llama_cloud_api_key: str = LLAMA_CLOUD_API_KEY
+    llama_parse_tier: str = LLAMA_PARSE_TIER
+    llama_parse_language: str = LLAMA_PARSE_LANGUAGE
     pdf_path: str = DATA_DIR
     documents_dir: str = DOCUMENTS_DIR
     chunk_size: int = CHUNK_SIZE
@@ -191,23 +198,55 @@ class IngestionPipeline:
             list: A list of the markdown nodes from theparsed document.
         """
         self.logger.info(f"[Stage 1] Parsing PDF: {self.config.pdf_path}")
- 
-        parser = LlamaParse(
-            api_key=self.config.llama_cloud_api_key,
-            result_type=self.config.llama_parse_result_type,
-            #automatically switches between parsing modes to only  
-            #used advanced parsing with images, for cost and effciency
-            auto_mode=True, 
-            auto_mode_trigger_on_image_in_page=True,
-            verbose=True,
-            language=self.config.llama_parse_language,
-            
+        
+        # reads LLAMA_CLOUD_API_KEY from environment automatically
+        client = LlamaCloud()
+
+        # Step 1: Upload the file 
+        self.logger.info("[Stage 1] Uploading file to LlamaCloud...")
+        with open(self.config.pdf_path, "rb") as f:
+            uploaded_file = client.files.create(
+                file=(os.path.basename(self.config.pdf_path), f, "application/pdf"),
+                purpose="parse",
+            )
+        self.logger.info(f"[Stage 1] File uploaded — id: {uploaded_file.id}")
+
+        # ── Step 2: Submit parse job and wait for completion ─────────────
+        self.logger.info(f"[Stage 1] Submitting parse job (tier={self.config.llama_parse_tier})...")
+        result = client.parsing.parse(
+            file_id=uploaded_file.id,
+            tier=self.config.llama_parse_tier,
+            version="latest",
+            output_options={
+                "markdown": {
+                    "tables": {"output_tables_as_markdown": True},
+                }
+            },
+            processing_options={
+                "ocr_parameters": {"languages": [self.config.llama_parse_language]},
+            },
+            expand=["markdown"],
         )
- 
-        documents = parser.load_data(self.config.pdf_path)
- 
+
+        # ── Step 3: Convert pages to LlamaIndex Documents ─────────────────
+        # result.markdown.pages is a list of page objects, each with:
+        #   .page      — 1-based page number (int)
+        #   .markdown  — full markdown text for that page
+        documents = [
+            Document(
+                text=page.markdown,
+                metadata={
+                    "page_label": str(page.page_number),
+                    "source": os.path.basename(self.config.pdf_path),
+                },
+            )
+            for page in result.markdown.pages
+            if page.markdown and page.markdown.strip()   # skip empty pages
+        ]
+
         self.logger.info(
-            f"[Stage 1] LlamaParse returned {len(documents)} document pages"
+            f"[Stage 1] Parsed {len(result.markdown.pages)} pages → "
+            f"{len(documents)} non-empty documents"
         )
         return documents
     
@@ -422,12 +461,13 @@ class IngestionPipeline:
             None
         """
         required = {
-            "pdf_path": self.config.pdf_path,
-            "llama_cloud_api_key": self.config.llama_cloud_api_key,
-            "qdrant_url": self.config.qdrant_url,
-            "qdrant_api_key": self.config.qdrant_api_key,
-            "collection_name": self.config.collection_name,
-        }
+                    "pdf_path": self.config.pdf_path,
+                    "llama_cloud_api_key": self.config.llama_cloud_api_key,
+                    "qdrant_url": self.config.qdrant_url,
+                    "qdrant_api_key": self.config.qdrant_api_key,
+                    "collection_name": self.config.collection_name,
+                }
+        
         missing = [k for k, v in required.items() if not v]
         if missing:
             raise ValueError(
@@ -463,14 +503,21 @@ class IngestionPipeline:
         self.logger.info("=" * 60)
 
 
-        if __name__ == "__main__":
-            config = IngestionConfig()
-            pipeline = IngestionPipeline(config)
-            result = pipeline.run()
-        
-            if not result.success:
-                self.logger.error(f"Pipeline failed: {result.error}")
-                sys.exit(1)
-            else:
-                self.logger.info("Pipeline completed successfully")
-                sys.exit(0)
+if __name__ == "__main__":
+    # Resolve .env relative to the project root, not the working directory
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    # Standalone logger for the entrypoint — no self here
+    logger = get_logger("__main__")
+    logger.info("Starting ingestion pipeline...")
+
+    config = IngestionConfig()
+    pipeline = IngestionPipeline(config)
+    result = pipeline.run()
+
+    if not result.success:
+        logger.error(f"Pipeline failed: {result.error}")
+        sys.exit(1)
+
+    logger.info("Done.")

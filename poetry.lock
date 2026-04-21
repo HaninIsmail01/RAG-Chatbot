@@ -1357,42 +1357,26 @@ files = [
 
 [[package]]
 name = "llama-cloud"
-version = "0.1.46"
-description = ""
+version = "2.4.1"
+description = "The official Python library for the llama-cloud API"
 optional = false
-python-versions = "<4,>=3.8"
+python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "llama_cloud-0.1.46-py3-none-any.whl", hash = "sha256:6c6546c09c04a038c86d84d42f00eae8fd3bff49991ad3aab844bd866ecdf352"},
-    {file = "llama_cloud-0.1.46.tar.gz", hash = "sha256:e86f8791c053590d70cc59e0fc13ce72f9b681a8e658bc61df86d0285288d8ee"},
+    {file = "llama_cloud-2.4.1-py3-none-any.whl", hash = "sha256:cef6c28412e5118bebd26b5965f1f0968cba742b6f1f4677e3447696709e0763"},
+    {file = "llama_cloud-2.4.1.tar.gz", hash = "sha256:bfb09ccbaa4dab7df1829d23aeda39d638a2d36fa6f70fe79d5e82d970d887dc"},
 ]
 
 [package.dependencies]
-certifi = ">=2024.7.4"
-httpx = ">=0.20.0"
-pydantic = ">=1.10"
+anyio = ">=3.5.0,<5"
+distro = ">=1.7.0,<2"
+httpx = ">=0.23.0,<1"
+pydantic = ">=1.9.0,<3"
+sniffio = "*"
+typing-extensions = ">=4.14,<5"
 
-[[package]]
-name = "llama-cloud-services"
-version = "0.6.94"
-description = "Tailored SDK clients for LlamaCloud services."
-optional = false
-python-versions = "<4.0,>=3.9"
-groups = ["main"]
-files = [
-    {file = "llama_cloud_services-0.6.94-py3-none-any.whl", hash = "sha256:ac89785f3689d71298511f751bcf4ca16952a616bd75ff06e0ff164f04b0775b"},
-    {file = "llama_cloud_services-0.6.94.tar.gz", hash = "sha256:127b8440d3d3a964d0c4b3f5fe7fcac3ead482f7645971cc8ae30768dcf63306"},
-]
-
-[package.dependencies]
-click = ">=8.1.7,<9"
-llama-cloud = "0.1.46"
-llama-index-core = ">=0.12.0"
-packaging = ">=23.0"
-platformdirs = ">=4.3.7,<5"
-pydantic = ">=2.8,<2.10 || >2.10"
-python-dotenv = ">=1.0.1,<2"
-tenacity = ">=8.5.0,<10.0"
+[package.extras]
+aiohttp = ["aiohttp", "httpx-aiohttp (>=0.1.9)"]
 
 [[package]]
 name = "llama-index"
@@ -1569,21 +1553,6 @@ typing-extensions = ">=4.6.0"
 [package.extras]
 client = ["llama-agents-client (>=0.1.0,<1.0.0)"]
 server = ["llama-agents-server (>=0.1.0,<1.0.0)"]
-
-[[package]]
-name = "llama-parse"
-version = "0.6.94"
-description = "Parse files into RAG-Optimized formats."
-optional = false
-python-versions = "<4.0,>=3.9"
-groups = ["main"]
-files = [
-    {file = "llama_parse-0.6.94-py3-none-any.whl", hash = "sha256:48f21d909696597bf992acf5017685d88a6b25604bc1e98775021f39fe66649f"},
-    {file = "llama_parse-0.6.94.tar.gz", hash = "sha256:d9e4347ec6caa1e9d5266cc5d4d8b29a29aa0d0948d921a26c73d3e4aaf5ba72"},
-]
-
-[package.dependencies]
-llama-cloud-services = ">=0.6.94"
 
 [[package]]
 name = "logging"
@@ -3992,4 +3961,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "5d8a527bf23d8ff229e1cc543e960bcf0db6b200b524550872ce3f3bcb41257c"
+content-hash = "975fdeebe25e427c0fac274fdeb0883739faa6f0522fc4b2dd312ae725659581"
