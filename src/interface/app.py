@@ -3,7 +3,6 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-#required imports
 import chainlit as cl
 from dotenv import load_dotenv
 
@@ -16,84 +15,64 @@ from config.logging import get_logger
 logger = get_logger(__name__)
 
 
-@cl.on_chat_start #decorator to run this function at the start of each chat session 
+@cl.on_chat_start
 async def on_chat_start():
-    """
-    Called once per session when a user opens the chat.
-    Initialises the RAG chain and session memory, stores
-    them in the Chainlit session so they persist across turns.
-    
-    Also sends a welcome message to the user and logs the session start.
-        
-    Returns:
-        None
-    """
     logger.info("New chat session started")
+
+    chain = build_chain()
+    memory = SessionMemory()
+
+    cl.user_session.set("chain", chain)
+    cl.user_session.set("memory", memory)
 
     await cl.Message(
         content=(
-            "👋 Hello! I'm your Iphone guide assistant.\n\n"
-            "Ask me anything about your iphone and I'll guide with cited answers from the user manual! 📱📖"
-        )
+            "👋 Hello! I'm your document assistant.\n\n"
+            "Ask me anything about the document and I'll answer "
+            "strictly from its contents — with source references "
+            "for every response."
+        ),
+        author="Assistant",
     ).send()
-
-    chain = build_chain() #build the RAG chain (retriever + graph) and store in session
-    memory = SessionMemory() #initialize empty session memory to track conversation history and context
-
-    #store the chain and memory in the session so they can be accessed in on_message for each user query
-    cl.user_session.set("chain", chain) 
-    cl.user_session.set("memory", memory) 
 
     logger.info("Chain and memory initialised for session")
 
 
 @cl.on_message
-async def on_message(message: cl.Message): 
-    """
-    Called on every user message.
-    Streams the RAG response token by token and appends citations.
-    Steps:
-    1. Retrieve the RAG chain and memory from the session
-    2. Stream the RAG response token by token to the UI for a dynamic experience
-    3. Handle any errors gracefully and log them for debugging
-    
-    Args:
-        message (cl.Message): The user message.
-        
-    Returns:
-        None
-    """
+async def on_message(message: cl.Message):
     chain: RAGChain = cl.user_session.get("chain")
     memory: SessionMemory = cl.user_session.get("memory")
 
-    if not chain or not memory: 
-        #check if chain and memory have been initialised in on_chat_start
+    if not chain or not memory:
         await cl.Message(
-            content="Session error — please refresh the page."
+            content="⚠️ Session error — please refresh the page.",
+            author="Assistant",
         ).send()
         return
 
-    # Show a thinking indicator while retrieving + generating
-    async with cl.Step(name="Retrieving from document..."):
-        pass
-
-    # Stream the response
-    response_msg = cl.Message(content="")
+    # Create the response message and send it immediately
+    # so Chainlit registers it as a new message in the thread
+    response_msg = cl.Message(content="", author="Assistant")
     await response_msg.send()
 
     try:
-        response = await chain.ainvoke( 
-            #run the RAG chain
+        async for token in chain.astream(
             query=message.content,
             memory=memory,
-        )
-        response_msg.content = response
-        await response_msg.update()
+        ):
+            await response_msg.stream_token(token)
+
+        # ✅ NO update() call here — this was causing the window to re-render
+        # and appear cleared. Chainlit finalizes streamed messages automatically
+        # when the async generator is exhausted.
 
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
+        # Only use update() in the error case where we're replacing
+        # the empty message with static error text — this is the
+        # correct use of update()
         response_msg.content = (
-            "An error occurred while processing your question. "
+            "⚠️ An error occurred while processing your question. "
             "Please try again."
         )
         await response_msg.update()

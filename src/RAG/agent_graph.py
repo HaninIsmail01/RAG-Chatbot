@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # =========================
 # Imports
 # =========================
-from typing import TypedDict, Annotated, List, Optional
+from typing import TypedDict, Annotated, List, AsyncIterator
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
@@ -30,20 +30,17 @@ logger = get_logger(__name__)
 
 
 # =========================
-# STATE (FIXED)
+# STATE
 # =========================
 class RAGState(TypedDict, total=False):
     """
     total=False is CRITICAL:
     prevents LangGraph from dropping keys between async nodes.
     """
-
     question: str
     history: Annotated[List[BaseMessage], add_messages]
-
     context: str
     docs: List[Document]
-
     answer: str
     response: str
 
@@ -78,14 +75,14 @@ def _format_citations(docs: list[Document]) -> str:
         section = doc.metadata.get("section", "unknown")
         source = doc.metadata.get("source", "")
 
-        key = f"{source}|{page}|{section}"
+        key = f"{source}|{page}|{section.strip('/')}"
         if key in seen:
             continue
         seen.add(key)
 
         citation = f"📄 **{source}** — Page {page}"
         if section:
-            citation += f", Section: _{section}_"
+            citation += f", Section: _{section.strip('/')}_"
         citations.append(citation)
 
     return "\n".join(citations)
@@ -96,17 +93,14 @@ def _format_citations(docs: list[Document]) -> str:
 # =========================
 def make_retrieve_node(retriever: QdrantRerankedRetriever):
     async def retrieve(state: RAGState) -> dict:
-
         logger.info(f"[retrieve] Query: {state['question']}")
 
         docs = await retriever.ainvoke(state["question"])
-
         context = _format_context(docs)
 
         logger.info(f"[retrieve] docs: {len(docs)}")
         logger.info(f"[retrieve] context preview: {context[:200]}")
 
-        # 🔴 IMPORTANT: explicitly return all fields
         return {
             "docs": docs,
             "context": context,
@@ -122,9 +116,7 @@ def make_generate_node(llm: ChatOpenAI):
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
-
         MessagesPlaceholder(variable_name="history"),
-
         ("human",
          "Use ONLY the context below to answer.\n\n"
          "CONTEXT:\n{context}\n\n"
@@ -134,11 +126,8 @@ def make_generate_node(llm: ChatOpenAI):
     chain = prompt | llm
 
     async def generate(state: RAGState) -> dict:
-
         logger.info("[generate] running LLM")
-
         logger.info(f"[generate] context exists: {bool(state.get('context'))}")
-
         logger.info(f"[generate] context preview:\n{state.get('context', '')[:300]}")
 
         response = await chain.ainvoke({
@@ -151,20 +140,17 @@ def make_generate_node(llm: ChatOpenAI):
 
     return generate
 
+
 # =========================
 # NODE 3 — CITATION
 # =========================
 def cite(state: RAGState) -> dict:
-
     logger.info("[cite] adding citations")
 
     citations = _format_citations(state.get("docs", []))
-
     response = f"{state['answer']}\n\n---\n**Sources:**\n{citations}"
 
-    return {
-        "response": response
-    }
+    return {"response": response}
 
 
 # =========================
@@ -174,10 +160,16 @@ class RAGChain:
 
     def __init__(self, retriever: QdrantRerankedRetriever):
         self.logger = get_logger(self.__class__.__name__)
+        self._retriever = retriever
         self._graph = self._build_graph(retriever)
+        self._llm = ChatOpenAI(
+            model=CHAT_MODEL_NAME,
+            temperature=CHAT_TEMPERATURE,
+            api_key=OPENAI_API_KEY,
+            streaming=True,
+        )
 
     def _build_graph(self, retriever):
-
         llm = ChatOpenAI(
             model=CHAT_MODEL_NAME,
             temperature=CHAT_TEMPERATURE,
@@ -198,8 +190,14 @@ class RAGChain:
 
         return graph.compile()
 
-    async def ainvoke(self, query: str, memory: SessionMemory):
-
+    # =========================
+    # FULL INVOKE (non-streaming)
+    # =========================
+    async def ainvoke(self, query: str, memory: SessionMemory) -> str:
+        """
+        Run the full LangGraph pipeline and return the complete
+        response string. Used as a fallback or for non-streaming contexts.
+        """
         self.logger.info(f"Query: {query}")
 
         initial_state: RAGState = {
@@ -212,13 +210,79 @@ class RAGChain:
         }
 
         final_state = await self._graph.ainvoke(initial_state)
-
         response = final_state["response"]
 
         memory.add_user_message(query)
         memory.add_ai_message(response)
 
         return response
+
+    # =========================
+    # STREAMING INVOKE
+    # =========================
+    async def astream(self, query: str, memory: SessionMemory) -> AsyncIterator[str]:
+        """
+        Stream response tokens one by one to the UI.
+
+        Because LangGraph does not natively expose token-level streaming
+        from individual nodes, we run retrieve and cite manually outside
+        the graph and stream only the LLM generation step — which is
+        where the latency actually lives.
+
+        Flow:
+            1. retrieve  — fetch + rerank docs via the same retriever
+                           the graph uses, keeping behaviour consistent
+            2. astream   — stream LLM tokens directly from the prompt chain
+            3. cite      — append citation block character by character
+                           so the full response streams smoothly
+            4. memory    — update conversation history after streaming ends
+
+        Yields:
+            str — individual tokens or characters
+        """
+        self.logger.info(f"[astream] Query: {query}")
+
+        # ── Step 1: retrieve (same logic as graph node) ───────────────
+        docs = await self._retriever.ainvoke(query)
+        context = _format_context(docs)
+        citations = _format_citations(docs)
+        self.logger.info(f"[astream] Retrieved {len(docs)} docs")
+
+        # ── Step 2: build prompt chain ────────────────────────────────
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT),
+            MessagesPlaceholder(variable_name="history"),
+            ("human",
+             "Use ONLY the context below to answer.\n\n"
+             "CONTEXT:\n{context}\n\n"
+             "QUESTION:\n{question}")
+        ])
+
+        stream_chain = prompt | self._llm
+
+        # ── Step 3: stream LLM tokens ─────────────────────────────────
+        full_answer = ""
+        async for chunk in stream_chain.astream({
+            "context": context,
+            "question": query,
+            "history": memory.get_messages(),
+        }):
+            token = chunk.content
+            if token:
+                full_answer += token
+                yield token
+
+        # ── Step 4: stream citation block ─────────────────────────────
+        citation_block = f"\n\n---\n**Sources:**\n{citations}"
+        for char in citation_block:
+            yield char
+
+        # ── Step 5: update memory with the complete response ──────────
+        full_response = full_answer + citation_block
+        memory.add_user_message(query)
+        memory.add_ai_message(full_response)
+
+        self.logger.info("[astream] Streaming complete")
 
 
 # =========================
