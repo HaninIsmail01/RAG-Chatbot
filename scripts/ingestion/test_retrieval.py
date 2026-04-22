@@ -1,24 +1,30 @@
 import sys
 import os
+from dotenv import load_dotenv
 from pathlib import Path
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Resolves the project root regardless of OS or working directory
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 #All needed imports
 from dataclasses import dataclass
+from llama_index.core import Settings
 from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.schema import NodeWithScore
 from llama_index.embeddings.fastembed import FastEmbedEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
+from llama_index.core.postprocessor import SentenceTransformerRerank
 from qdrant_client import QdrantClient
 
 from config.config import (
-    QDRANT_URL,
+    QDRANT_PORT,
+    QDRANT_HOST,
     QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
-    EMBED_MODEL_NAME,
+    LLAMA_INDEX_EMBED_MODEL_NAME,
     RERANKER_MODEL_NAME,
     RETRIEVAL_TOP_K,
     RERANKER_TOP_N,
@@ -61,32 +67,32 @@ class RetrievalTester:
         self.logger.info("Retrieval tester initialised")
 
     def _setup(self) -> None:
-        """Initialise the vector index and reranker — done once at startup."""
         self.logger.info("Initialising retrieval tester...")
-
         embed_model = self._build_embed_model()
-        client = self._connect_qdrant()
-        self._index = self._load_index(client, embed_model)
-        self._reranker = self._build_reranker()
 
+        # ── Set globally via Settings — required in llama-index-core >= 0.10
+        Settings.embed_model = embed_model
+
+        client = self._connect_qdrant()
+        self._index = self._load_index(client)
+        self._reranker = self._build_reranker()
         self.logger.info("Retrieval tester ready")
 
     def _build_embed_model(self) -> FastEmbedEmbedding:
-        self.logger.info(f"Loading embed model: {EMBED_MODEL_NAME}")
-        return FastEmbedEmbedding(
-            model_name=EMBED_MODEL_NAME,
+        self.logger.info(f"Loading embed model: {LLAMA_INDEX_EMBED_MODEL_NAME}")
+        embed_model = FastEmbedEmbedding(
+            model_name=LLAMA_INDEX_EMBED_MODEL_NAME,
             cache_dir=".fastembed_cache",
         )
+        return embed_model
 
     def _connect_qdrant(self) -> QdrantClient:
         self.logger.info("Connecting to Qdrant Cloud...")
-        return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        return QdrantClient(url=QDRANT_HOST, api_key=QDRANT_API_KEY)
 
-    def _load_index(
-        self,
-        client: QdrantClient,
-        embed_model: FastEmbedEmbedding,
-    ) -> VectorStoreIndex:
+    def _load_index(self, client: QdrantClient) -> VectorStoreIndex:
+        # No longer accepts embed_model as a parameter —
+        # uses Settings.embed_model set above
         self.logger.info(
             f"Loading index from collection: '{QDRANT_COLLECTION_NAME}'"
         )
@@ -100,12 +106,11 @@ class RetrievalTester:
         return VectorStoreIndex.from_vector_store(
             vector_store,
             storage_context=storage_context,
-            embed_model=embed_model,
         )
 
-    def _build_reranker(self) -> FlagEmbeddingReranker:
+    def _build_reranker(self) -> SentenceTransformerRerank:
         """
-        FlagEmbeddingReranker uses a cross-encoder model to re-score
+        SentenceTransformerRerank uses a cross-encoder model to re-score
         retrieved chunks based on direct query-chunk relevance — more
         accurate than vector similarity alone, which only measures
         approximate directional proximity in embedding space.
@@ -113,7 +118,7 @@ class RetrievalTester:
         
         """
         self.logger.info(f"Loading reranker: {RERANKER_MODEL_NAME}")
-        return FlagEmbeddingReranker(
+        return SentenceTransformerRerank(
             model=RERANKER_MODEL_NAME,
             top_n=RERANKER_TOP_N,
         )
@@ -143,13 +148,8 @@ class RetrievalTester:
         Retrieve and rerank chunks for a single query.
         Returns a list of RetrievalResult dataclasses.
         """
-        retriever = self._index.as_retriever(
-            similarity_top_k=RETRIEVAL_TOP_K
-        )
+        retriever = self._index.as_retriever(similarity_top_k=RETRIEVAL_TOP_K)
         raw_nodes: list[NodeWithScore] = retriever.retrieve(query)
-        self.logger.debug(
-            f"Retrieved {len(raw_nodes)} raw chunks for: '{query}'"
-        )
 
         reranked: list[NodeWithScore] = self._reranker.postprocess_nodes(
             raw_nodes,

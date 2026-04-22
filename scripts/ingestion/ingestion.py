@@ -31,6 +31,7 @@ respect to its various length sections and figures, and importantly, its ability
 section names that will be used to cite the answers along with the page numbers.
 """
 from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core import Settings
 
 """
 Markdown splitter was chosen to perserve the document structure and
@@ -96,9 +97,9 @@ class IngestionConfig:
     documents_dir: str = DOCUMENTS_DIR
     chunk_size: int = CHUNK_SIZE
     chunk_overlap: int = CHUNK_OVERLAP
-    embed_model_name: str = LLAMA_INDEX_EMBED_MODEL_NAME,
+    embed_model_name: str = LLAMA_INDEX_EMBED_MODEL_NAME
     fastembed_cache_dir: str = FASTEMBED_CACHE_DIR
-    emned_dimensions: int = EMBED_DIMENSIONS
+    embed_dimensions: int = EMBED_DIMENSIONS
     
     
 @dataclass
@@ -245,7 +246,7 @@ class IngestionPipeline:
         ]
 
         self.logger.info(
-            f"[Stage 1] Parsed {len(result.markdown.pages)} pages → "
+            f"[Stage 1] Parsed {len(result.markdown.pages)} pages into"
             f"{len(documents)} non-empty documents"
         )
         return documents
@@ -356,12 +357,14 @@ class IngestionPipeline:
             FastEmbedEmbedding: An initialised FastEmbed model.
         """
         self.logger.info(
-            f"[Stage 3] Initialising embedding model: {self.config.embed_model_name}"
+        f"[Stage 3] Initialising embedding model: {self.config.embed_model_name}"
         )
-        return FastEmbedEmbedding(
+        embed_model = FastEmbedEmbedding(
             model_name=self.config.embed_model_name,
             cache_dir=self.config.fastembed_cache_dir,
         )
+        Settings.embed_model = embed_model   # ← set globally
+        return embed_model
     
     # Phase 4: Connecting to Qdrant and uploading the nodes
     def _connect_qdrant(self) -> QdrantClient:
@@ -431,9 +434,8 @@ class IngestionPipeline:
             None
         """
         self.logger.info(
-            f"Embedding and uploading {len(nodes)} chunks to Qdrant..."
+        f"Embedding and uploading {len(nodes)} chunks to Qdrant..."
         )
- 
         vector_store = QdrantVectorStore(
             client=client,
             collection_name=self.config.collection_name,
@@ -441,14 +443,12 @@ class IngestionPipeline:
         storage_context = StorageContext.from_defaults(
             vector_store=vector_store
         )
- 
         VectorStoreIndex(
             nodes=nodes,
             storage_context=storage_context,
-            embed_model=embed_model,
+            # embed_model no longer passed directly
             show_progress=True,
         )
- 
         self.logger.info("Upload complete")
  
     # Helpers Functions

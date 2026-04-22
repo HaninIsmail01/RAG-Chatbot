@@ -9,6 +9,19 @@ load_dotenv(dotenv_path=_env_path)
     
 #Ingestion Related Configurations
 
+import nltk
+
+NLTK_DATA = os.getenv("NLTK_DATA", ".nltk_data")
+os.makedirs(NLTK_DATA, exist_ok=True)
+nltk.data.path.insert(0, os.path.abspath(NLTK_DATA))
+
+# Download required corpora to the local directory if not already present
+for corpus in ["punkt", "punkt_tab", "stopwords"]:
+    try:
+        nltk.data.find(f"corpora/{corpus}")
+    except LookupError:
+        nltk.download(corpus, download_dir=os.path.abspath(NLTK_DATA))
+
 # Qdrant Configurations
 QDRANT_HOST = os.getenv("QDRANT_HOST")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT"))
@@ -30,7 +43,7 @@ CHUNK_SIZE = 512
 CHUNK_OVERLAP = 64 
 
 #Retrieval with Reranking Configurations
-RERANKER_MODEL_NAME = "jinaai/jina-reranker-v2-base-multilingual"
+RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 RETRIEVAL_TOP_K = 10
 RERANKER_TOP_N = 5
 
