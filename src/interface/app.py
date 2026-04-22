@@ -27,10 +27,8 @@ async def on_chat_start():
 
     await cl.Message(
         content=(
-            "👋 Hello! I'm your document assistant.\n\n"
-            "Ask me anything about the document and I'll answer "
-            "strictly from its contents — with source references "
-            "for every response."
+            "👋 Hello! I'm your Iphone guide.\n\n"
+            "Ask me anything about your iphone, and I'll answer "
         ),
         author="Assistant",
     ).send()
