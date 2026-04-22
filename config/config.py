@@ -23,8 +23,8 @@ for corpus in ["punkt", "punkt_tab", "stopwords"]:
         nltk.download(corpus, download_dir=os.path.abspath(NLTK_DATA))
 
 # Qdrant Configurations
-QDRANT_HOST = os.getenv("QDRANT_HOST")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT"))
+QDRANT_HOST = "https://1eb088d7-6481-4a4a-9d8f-c1bfcaf51566.eu-central-1-0.aws.cloud.qdrant.io"
+QDRANT_PORT = 6333
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_COLLECTION_NAME = "Guide_Collection"
 
