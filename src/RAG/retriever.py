@@ -8,7 +8,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_qdrant import QdrantVectorStore
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from qdrant_client import QdrantClient
 from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.core.schema import NodeWithScore, TextNode, QueryBundle
@@ -21,8 +21,7 @@ from config.config import (
     LLAMA_INDEX_EMBED_MODEL_NAME,
     RERANKER_MODEL_NAME,
     RETRIEVAL_TOP_K,
-    RERANKER_TOP_N,
-    OPENAI_API_KEY,
+    RERANKER_TOP_N
 )
 from config.logging import get_logger
 
@@ -131,6 +130,7 @@ def build_retriever() -> QdrantRerankedRetriever:
         1. Vector similarity search to retrieve top-K chunks from Qdrant
         2. Rerank with FlagEmbeddingReranker (cross-encoder) to top-N most relevant chunks
     """
+    
     logger.info("Building retriever...")
 
     client = QdrantClient(
@@ -138,30 +138,34 @@ def build_retriever() -> QdrantRerankedRetriever:
         api_key=QDRANT_API_KEY.strip(),
     )
 
-    # LangChain-native Qdrant integration
-    # Uses FastEmbed-compatible dimensions via OpenAI embeddings
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        api_key=OPENAI_API_KEY,
-    )
+    # Use the same embedding model as ingestion — BAAI/bge-base-en-v1.5
+    # via FastEmbedEmbeddings (langchain-community wrapper around fastembed).
+    # This guarantees query vectors live in the same space as the stored
+    # chunk vectors — a mismatch here would silently destroy retrieval quality.
     
+    embeddings = FastEmbedEmbeddings(
+        model_name= LLAMA_INDEX_EMBED_MODEL_NAME,        # "BAAI/bge-base-en-v1.5"
+        cache_dir=".fastembed_cache",       # reuse the same cache from ingestion
+        doc_embed_type="passage",           # BGE models expect "passage" prefix
+                                            # for document-side embeddings;
+                                            # queries use default (no prefix)
+    )
+
     vector_store = QdrantVectorStore(
         client=client,
         collection_name=QDRANT_COLLECTION_NAME,
-        embedding=embeddings,
+        embedding=embeddings
     )
 
-    # LangChain-native reranker
-    # Uses a cross-encoder model to re-score retrieved chunks
     reranker = SentenceTransformerRerank(
         model=RERANKER_MODEL_NAME,
-        top_n=RERANKER_TOP_N,
+        top_n=RERANKER_TOP_N
     )
 
     logger.info("Retriever ready")
     return QdrantRerankedRetriever(
         vector_store=vector_store,
-        reranker=reranker,
+        reranker=reranker
     )
     
 if __name__ == "__main__":
