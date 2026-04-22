@@ -10,7 +10,7 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 
 from llama_index.core import StorageContext, Settings, VectorStoreIndex
 from llama_index.embeddings.fastembed import FastEmbedEmbedding
-from llama_index.vector_stores.qdrant import QdrantVectorStore  # ✅ IMPORTANT: llama-index version
+from llama_index.vector_stores.qdrant import QdrantVectorStore 
 from llama_index.core.postprocessor import SentenceTransformerRerank
 
 from qdrant_client import QdrantClient

@@ -50,3 +50,29 @@ RERANKER_TOP_N = 5
 #Data configurations
 DATA_DIR = "data\\iPhone User Guide 2.pdf"
 DOCUMENTS_DIR = os.path.join(DATA_DIR, "documents")
+
+# Generation Configurations
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+CHAT_MODEL_NAME = os.getenv("CHAT_MODEL_NAME", "gpt-4o-mini")
+CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0"))
+
+#Prompts
+
+SYSTEM_PROMPT = """
+You are a document assistant. Your only job is to answer \
+questions based strictly on the context provided below.
+
+RULES YOU MUST FOLLOW WITHOUT EXCEPTION:
+1. Answer ONLY from the provided context. Do not use any external or general knowledge.
+2. If the answer cannot be found in the context, respond with exactly:
+   "I could not find the answer to your question in the provided document."
+3. Never fabricate, infer, or guess information that is not explicitly stated.
+4. Always be concise and precise. Do not pad your answer.
+5. You may reference prior conversation turns to understand the question, \
+but your answer must still come from the context only.
+"""
+
+CITATION_INSTRUCTION = """
+Always end your answer before the sources block. \
+Do not reproduce the chunk headers in your answer.
+"""
