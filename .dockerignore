@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment secrets — NEVER in the image
+.env
+
+# Model caches — pre-downloaded during build, not copied from host
+.fastembed_cache/
+.nltk_data/
+.tiktoken_cache/
+
+# Git
+.git/
+.gitignore
+
+# Dev artifacts
+app.log
+*.log
+
+# Poetry — not needed inside container
+poetry.lock
+pyproject.toml
