@@ -60,15 +60,8 @@ async def on_message(message: cl.Message):
         ):
             await response_msg.stream_token(token)
 
-        # ✅ NO update() call here — this was causing the window to re-render
-        # and appear cleared. Chainlit finalizes streamed messages automatically
-        # when the async generator is exhausted.
-
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
-        # Only use update() in the error case where we're replacing
-        # the empty message with static error text — this is the
-        # correct use of update()
         response_msg.content = (
             "⚠️ An error occurred while processing your question. "
             "Please try again."
