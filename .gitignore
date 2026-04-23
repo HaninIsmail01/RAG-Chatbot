@@ -21,6 +21,8 @@ __pycache__/
 # IDEs
 .vscode/    
 
+.chainlit/
+
 # Vector Store 
 *.pkl
 *.faiss
