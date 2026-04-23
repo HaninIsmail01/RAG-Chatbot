@@ -22,6 +22,7 @@ __pycache__/
 .vscode/    
 
 .chainlit/
+chainlit.md
 
 # Vector Store 
 *.pkl
