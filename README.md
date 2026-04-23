@@ -136,6 +136,8 @@ The PDF is processed in two stages:
 
 ##  RAG Retrieval Strategy
 
+ ### Retrieval + Reranker
+ 
 Retrieval is designed as a two-stage pipeline to balance recall and precision — vector similarity alone is fast but imprecise, while a
 cross-encoder reranker is accurate but too slow to run over the entire index. Combining both gives the best of each.
 
