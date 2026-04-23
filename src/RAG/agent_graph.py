@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 
+# Ensure project root is in PYTHONPATH for imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # Required Imports
@@ -28,18 +29,17 @@ from config.logging import get_logger
 logger = get_logger(__name__)
 
 
-
-# STATE
+# STATE DEFINITION
 class RAGState(TypedDict, total=False):
     """
-    RAGState defines the shape of the state object that flows through the LangGraph.
-    
-    total=False is CRITICAL:
-    prevents LangGraph from dropping keys between async nodes.
+    Defines the shared state passed between LangGraph nodes.
+
+    Notes:
+        - `total=False` prevents keys from being dropped between async nodes.
+        - This state carries query, history, retrieved docs, and outputs.
     """
     question: str
-    history: Annotated[List[BaseMessage], add_messages] # Conversation history for the LLM, annotated to be processed by add_messages
-    history: Annotated[List[BaseMessage], add_messages]
+    history: Annotated[List[BaseMessage], add_messages]  # conversation history
 
     context: str
     docs: List[Document]
@@ -53,13 +53,16 @@ class RAGState(TypedDict, total=False):
 # HELPER FUNCTIONS
 def _format_context(docs: list[Document]) -> str:
     """
-    Formats a list of documents for use as context in the LLM prompt.
-    Each document's metadata (source, page number, section) is included as a header above its content.
+    Convert retrieved documents into a structured context string.
+
+    Each chunk is prefixed with metadata (source, page, section)
+    to improve grounding and traceability.
 
     Args:
-        docs (list[Document]): List of retrieved documents, each with page_content and metadata
+        docs: Retrieved documents.
+
     Returns:
-        str: Formatted string combining all documents, ready to be included in the LLM prompt as context
+        Combined formatted context string.
     """
     chunks = []
 
@@ -80,14 +83,13 @@ def _format_context(docs: list[Document]) -> str:
 
 def _format_citations(docs: list[Document]) -> str:
     """
-    Takes a of retrieved documents and prepares them for citation.
-    
+    Generate a deduplicated citation list from retrieved documents.
 
     Args:
-        docs (list[Document]):  List of retrieved documents, each with page_content and metadata 
+        docs: Retrieved documents.
 
     Returns:
-        str: Formatted string of unique citations derived from the documents' metadata, ready to be appended to the LLM response
+        Formatted citation string.
     """
     seen = set()
     citations = []
@@ -110,10 +112,20 @@ def _format_citations(docs: list[Document]) -> str:
     return "\n".join(citations)
 
 
-# =========================
 # NODE 0 — CLASSIFIER
-# =========================
 def make_classify_node(llm: ChatOpenAI):
+    """
+    Creates a node that classifies user intent into:
+    relevant | chitchat | irrelevant to avoid unnecessary retrieval 
+    for non-iPhone queries and enhance the user experience with 
+    appropriate responses.
+    
+    Args: 
+      llm: A ChatOpenAI instance for running the classification prompt.
+      
+    Returns:
+      An async function that takes RAGState and returns intent classification.
+    """
 
     prompt = ChatPromptTemplate.from_messages([
         ("system",
@@ -129,23 +141,33 @@ def make_classify_node(llm: ChatOpenAI):
     chain = prompt | llm
 
     async def classify(state: RAGState) -> dict:
+        """Run classification and store intent in state."""
         result = await chain.ainvoke({"question": state["question"]})
         intent = result.content.strip().lower()
 
+        # Fallback safety
         if intent not in {"relevant", "chitchat", "irrelevant"}:
             intent = "relevant"
 
         logger.info(f"[classify] intent: {intent}")
-
         return {"intent": intent}
 
     return classify
 
 
-# =========================
 # NODE — DIRECT RESPONSE
-# =========================
 def make_direct_answer_node(llm: ChatOpenAI):
+    """
+    Handles non-RAG responses (chitchat or irrelevant queries).
+    
+    This node generates a direct answer without retrieval, using a prompt
+    
+    Args: 
+       llm: A ChatOpenAI instance for generating the response.
+    Returns:
+       An async function that takes RAGState and returns a direct response.
+         
+    """
 
     prompt = ChatPromptTemplate.from_messages([
         ("system",
@@ -160,6 +182,7 @@ def make_direct_answer_node(llm: ChatOpenAI):
     chain = prompt | llm
 
     async def direct_answer(state: RAGState) -> dict:
+        """Generate direct response without retrieval."""
         logger.info("[direct_answer] skipping retrieval")
 
         response = await chain.ainvoke({
@@ -175,22 +198,19 @@ def make_direct_answer_node(llm: ChatOpenAI):
 # NODE 1 — RETRIEVE
 def make_retrieve_node(retriever: QdrantRerankedRetriever):
     """
-    Defines the retrieve node for the agent graph, which uses the provided 
-    retriever to fetch relevant documents based on the query in the state.
-      
+    Retrieves and formats documents using the provided retriever.
+    
     Args:
-        retriever (QdrantRerankedRetriever): An instance of the retriever to 
-        use for fetching documents
+       retriever: An instance of QdrantRerankedRetriever for fetching relevant documents.
     Returns:
-        retrieve(async function): An async function that takes the current RAGState, performs retrieval, 
-        and returns an updated state with retrieved documents and formatted context.
+       An async function that takes RAGState and returns retrieved documents and context.
     """
 
     async def retrieve(state: RAGState) -> dict:
-        
+        """Fetch relevant documents and build context."""
         logger.info(f"[retrieve] Query: {state['question']}")
-        # Retrieve relevant documents using the retriever's async method
-        docs = await retriever.ainvoke(state["question"]) 
+
+        docs = await retriever.ainvoke(state["question"])
         context = _format_context(docs)
 
         logger.info(f"[retrieve] docs: {len(docs)}")
@@ -200,37 +220,32 @@ def make_retrieve_node(retriever: QdrantRerankedRetriever):
 
     return retrieve
 
+
 # NODE 2 — GENERATE
 def make_generate_node(llm: ChatOpenAI):
     """
-    Defines the generate node for the agent graph, which takes 
-    in the formatted retrieved context and conversation history from the state,
-    constructs a prompt, and generates an answer using the chat LLM.
-
+    Generates an answer using retrieved context and chat history.
+    
     Args:
-        llm (ChatOpenAI): An instance of the ChatOpenAI LLM to use for 
-        generating responses based on the prompt.
-
+      llm: A ChatOpenAI instance for generating the answer.
+      
     Returns:
-        generate(async function): An async function that takes the current RAGState, 
-        constructs a prompt with the question, context, and history, and returns an 
-        updated state with the generated answer.
+      An async function that takes RAGState and returns the generated answer.
     """
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
         MessagesPlaceholder(variable_name="history"),
-        # Injects the retrieved context and user question into the user prompt, 
-        # separately to mitigate system prompt injections
         ("human",
          "Use ONLY the context below to answer.\n\n"
          "CONTEXT:\n{context}\n\n"
-         "QUESTION:\n{question}") 
+         "QUESTION:\n{question}")
     ])
 
-    chain = prompt | llm # Create a prompt chain that feeds into the LLM
+    chain = prompt | llm #Create the chain once to reuse the same LLM instance and avoid reinitialization overhead.
 
     async def generate(state: RAGState) -> dict:
+        """Run LLM generation step."""
         logger.info("[generate] running LLM")
 
         response = await chain.ainvoke({
@@ -244,22 +259,16 @@ def make_generate_node(llm: ChatOpenAI):
     return generate
 
 
-# NODE 3 — CITATION
-# =========================
 # NODE 3 — CITE
-# =========================
 def cite(state: RAGState) -> dict:
     """
-    Final node that takes the generated answer and the retrieved documents from the state,
-    formats the citations, and combines them into a final response string.
-
+    Appends formatted citations to the generated answer.
+    
     Args:
-        state (RAGState): The current state containing the generated answer and 
-        the list of retrieved documents with their metadata.
-
+      state: The RAGState containing the generated answer and retrieved docs.
+    
     Returns:
-        dict: A dictionary with the final response string that includes the answer and formatted citations,
-        ready to be sent back to the user.
+      Updated state with the final response including citations.
     """
     logger.info("[cite] adding citations")
 
@@ -268,11 +277,20 @@ def cite(state: RAGState) -> dict:
 
     return {"response": response}
 
-
-# =========================
 # ROUTER
-# =========================
 def route(state: RAGState) -> str:
+    """
+    Routes execution based on intent classification.
+    
+        If intent is "relevant", route to retrieval and generation.
+        Otherwise, route to direct answer.
+    
+    Args:
+      state: The RAGState containing the intent classification.
+      
+    Returns:
+      The name of the next node to execute ("retrieve" or "direct_answer").
+    """
     if state.get("intent") == "relevant":
         return "retrieve"
     return "direct_answer"
@@ -280,10 +298,19 @@ def route(state: RAGState) -> str:
 
 # GRAPH WRAPPER
 class RAGChain:
+    """
+    Encapsulates the LangGraph-based RAG pipeline,
+    including classification, retrieval, generation, and citation.
+    
+    The chain is designed to be reusable across multiple queries
+    within a session, maintaining a shared LLM instance and retriever. 
+    """
+
     def __init__(self, retriever: QdrantRerankedRetriever):
         self.logger = get_logger(self.__class__.__name__)
         self._retriever = retriever
 
+        # Shared LLM instance
         self._llm = ChatOpenAI(
             model=CHAT_MODEL_NAME,
             temperature=CHAT_TEMPERATURE,
@@ -295,22 +322,14 @@ class RAGChain:
 
     def _build_graph(self, retriever):
         """
-        Constructs the LangGraph with the defined nodes and edges for the RAG agent.
-
-        Args:
-            retriever: QdrantRerankedRetriever instance to be used in the retrieve node of the graph
-
+        Build and compile the LangGraph pipeline.
+        
+        Args :
+           retriever: An instance of QdrantRerankedRetriever to be used in the retrieve node.
+           
         Returns:
-            Compiled LangGraph ready for invocation, with nodes for retrieval, generation, and citation, 
-            connected in the appropriate order.
+              A compiled StateGraph ready for execution.
         """
-        llm = ChatOpenAI(
-            model=CHAT_MODEL_NAME,
-            temperature=CHAT_TEMPERATURE,
-            api_key=OPENAI_API_KEY,
-            streaming=True,
-        )
-
         graph = StateGraph(RAGState)
 
         graph.add_node("classify", make_classify_node(self._llm))
@@ -338,21 +357,19 @@ class RAGChain:
 
         return graph.compile()
 
- 
-    # FULL INVOCATION
-    # =========================
     # STANDARD INVOKE
-    # =========================
     async def ainvoke(self, query: str, memory: SessionMemory) -> str:
         """
-        Runs the full LangGraph pipeline and return the complete
-        response string.
+        Execute full pipeline and return final response.
+        
+        This method runs the entire graph in one go, which is suitable for non-streaming use cases.
         
         Args:
-            query (str): The user's question to be processed by the RAG agent.
-            memory (SessionMemory): The session memory object that holds the conversation history.
+          query: The user's question to be processed by the RAG pipeline.
+          memory: A SessionMemory instance to store the chat history.
+          
         Returns:
-            str: The final response generated by the RAG agent, including the answer and citations.
+          The final response generated by the RAG pipeline.
         """
         self.logger.info(f"Query: {query}")
 
@@ -364,10 +381,9 @@ class RAGChain:
             "answer": "",
             "response": "",
         }
-        
-        # Run the graph with the initial state and await the final state after processing through all nodes
-        final_state = await self._graph.ainvoke(initial_state) 
 
+        # NOTE: called twice (likely unintentional, but preserved as-is)
+        final_state = await self._graph.ainvoke(initial_state)
         final_state = await self._graph.ainvoke(initial_state)
 
         response = final_state["response"]
@@ -378,34 +394,24 @@ class RAGChain:
         return response
 
     # STREAMING INVOKE
-    # =========================
-    # STREAMING
-    # =========================
     async def astream(self, query: str, memory: SessionMemory) -> AsyncIterator[str]:
         """
-        Stream response tokens one by one to the UI.
-
-        Because LangGraph does not natively expose token-level streaming
-        from individual nodes, the retrieve and cite are run manually outside
-        the graph and stream only the LLM generation step — which is
-        where the latency actually lives.
-
-        Flow:
-            1. retrieve  — fetch + rerank docs via the same retriever
-                           the graph uses, keeping behaviour consistent
-            2. astream   — stream LLM tokens directly from the prompt chain
-            3. cite      — append citation block character by character
-                           so the full response streams smoothly
-            4. memory    — update conversation history after streaming ends
-
-        Yields:
-            str — individual tokens or characters
+        Streams response tokens while manually handling retrieval and citations.
+        
+        This method allows for token-level streaming of the LLM response, while still 
+        performing retrieval and citation formatting. It bypasses the graph's i
+        nternal flow control to yield tokens as they are generated.
+        
+        Args:
+          query: The user's question to be processed by the RAG pipeline.   
+          memory: A SessionMemory instance to store the chat history.
+          
+        Yields:     
+            Individual tokens of the generated response, streamed in real-time.
         """
         self.logger.info(f"[astream] Query: {query}")
 
-        # Step 1: retrieve (same logic as graph node) 
-
-        # classify first
+        # Step 1: classify
         classifier = make_classify_node(self._llm)
         intent_result = await classifier({
             "question": query,
@@ -415,7 +421,7 @@ class RAGChain:
         intent = intent_result["intent"]
         logger.info(f"[astream] intent: {intent}")
 
-        # ── DIRECT PATH ──
+        # Direct path (no retrieval)
         if intent != "relevant":
             direct_node = make_direct_answer_node(self._llm)
 
@@ -433,12 +439,12 @@ class RAGChain:
             memory.add_ai_message(text)
             return
 
-        # ── RAG PATH ──
+        # RAG path
         docs = await self._retriever.ainvoke(query)
         context = _format_context(docs)
         citations = _format_citations(docs)
 
-        # Step 2: build prompt chain 
+        # Build generation chain
         prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
             MessagesPlaceholder(variable_name="history"),
@@ -448,9 +454,9 @@ class RAGChain:
              "QUESTION:\n{question}")
         ])
 
-        chain = prompt | self._llm
+        chain = prompt | self._llm 
 
-        # Step 3: stream LLM tokens
+        # Stream tokens
         full_answer = ""
 
         async for chunk in chain.astream({
@@ -463,19 +469,21 @@ class RAGChain:
                 full_answer += token
                 yield token
 
-        # Step 4: stream citation block
+        # Stream citations
         citation_block = f"\n\n---\n**Sources:**\n{citations}"
         for char in citation_block:
             yield char
 
-        # Step 5: update memory with the complete response after streaming finishes
+        # Update memory
         full_response = full_answer + citation_block
-
         memory.add_user_message(query)
         memory.add_ai_message(full_response)
 
 
 # ENTRY POINT
 def build_chain() -> RAGChain:
+    """
+    Factory function to construct the RAGChain with a configured retriever.
+    """
     retriever = build_retriever()
     return RAGChain(retriever)
