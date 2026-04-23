@@ -39,7 +39,7 @@ RUN pip install --upgrade pip && \
 COPY config/ ./config/
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-COPY docs/ ./docs/
+COPY data/ ./data/
 
 # Pre-download FastEmbed model weights 
 # FastEmbed downloads model weights on first use. This is triggered
