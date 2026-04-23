@@ -30,22 +30,35 @@ from config.logging import get_logger
 logger = get_logger(__name__)
 
 
-# =========================
 # Retriever
-# =========================
 class QdrantRerankedRetriever(BaseRetriever):
     """
-    LlamaIndex-based retriever wrapped as a LangChain BaseRetriever.
+    LlamaIndex-based retriever wrapped as a LangChain BaseRetriever to match the vector build used at ingestion time
+    with the structure expected by LangChain. 
+    Retrieval is done in two steps: 
+        1. First retrieve top-k with LlamaIndex 
+        2. Then rerank with SentenceTransformerRerank.
     """
-
+    
+     # the LlamaIndex VectorStoreIndex, NOT the LangChain version
     index: VectorStoreIndex = Field(exclude=True)
+    # the SentenceTransformerRerank postprocessor
     reranker: SentenceTransformerRerank = Field(exclude=True)
 
+     # Number of initial documents to retrieve with LlamaIndex before reranking
     top_k: int = RETRIEVAL_TOP_K
-    top_n: int = RERANKER_TOP_N
+    # Number of documents to return after reranking (final number of documents fed to LLM)
+    top_n: int = RERANKER_TOP_N 
 
     class Config:
-        arbitrary_types_allowed = True
+        """
+        Configuration for this pydantic object.
+            - exclude the LlamaIndex index and reranker from the model dict 
+            since they are not serializable and not needed for the retriever to function 
+            (they are passed in at init and used directly in the retrieval method).
+        """
+        # allow arbitrary types since the index and reranker are complex objects.
+        arbitrary_types_allowed = True 
 
     def _get_relevant_documents(
         self,
@@ -53,6 +66,16 @@ class QdrantRerankedRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun,
     ) -> list[Document]:
+        """
+        
+
+        Args:
+            query (str): _description_
+            run_manager (CallbackManagerForRetrieverRun): _description_
+
+        Returns:
+            list[Document]: _description_
+        """
 
         logger.debug(f"[retrieve] Query: {query}")
 
