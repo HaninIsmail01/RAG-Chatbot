@@ -9,16 +9,16 @@ A PDF-grounded RAG chatbot built with LlamaParse and LlamaIndex for ingestion, Q
 - **Document-grounded answers** — the chatbot answers exclusively from the content of the provided PDF. It will never fabricate information or draw on general knowledge outside the document.
 - **Mandatory source citations** — every response includes the source page number and section from the PDF, allowing answers to be traced directly back to the original document.
     
-![Chatbot Grounded Answer Sample](assets\grounded_answer.png)
+![Chatbot Grounded Answer Sample](assets/grounded_answer.png)
 
 - **Query classification** — user inputs are classified before retrieval into one of three categories: topic-relevant, chitchat, or irrelevant. This avoids unnecessary vector search, handles off-topic inputs gracefully, and improves the overall user experience.
       
-![Responses to different query types](assets\sample-query-classes.png)
+![Responses to different query types](assets/sample-query-classes.png)
 
 - **Retrieval with reranking** — chunks are first retrieved by vector similarity from Qdrant, then reranked using a cross-encoder (`BAAI/bge-reranker-base`) to surface the most relevant content before passing it to the LLM.
 - **Multi-turn conversation** — the chatbot maintains conversation history within a session, allowing follow-up questions and context-aware responses across multiple turns.
 
-![Multiturn support](assets\conv-history.png)
+![Multiturn support](assets/conv-history.png)
 
 - **Streaming responses** — answers are streamed token by token in the UI for a responsive, real-time feel.
 - **Structured ingestion pipeline** — the PDF is parsed using LlamaParse v2's agentic OCR, chunked with a two-stage MarkdownNodeParser + TokenTextSplitter strategy, embedded locally with FastEmbed, and stored in Qdrant Cloud with rich metadata (page number, section) for accurate citations.
@@ -116,7 +116,7 @@ Grounded response with mandatory citations
 The ingestion script is provided for review purposes only. The Qdrant index is already populated — do not re-run unless you want to repopulate the collection from scratch.
 
 Ingest upload confirmation: 
-![Ingestion upload](assets\ingestion-log.png)
+![Ingestion upload](assets/ingestion-log.png)
 
 ```bash
 poetry run python -m scripts/ingestion/ingestion.py
