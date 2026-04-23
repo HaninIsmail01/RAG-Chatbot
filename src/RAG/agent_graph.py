@@ -39,10 +39,15 @@ class RAGState(TypedDict, total=False):
     """
     question: str
     history: Annotated[List[BaseMessage], add_messages] # Conversation history for the LLM, annotated to be processed by add_messages
+    history: Annotated[List[BaseMessage], add_messages]
+
     context: str
     docs: List[Document]
+
     answer: str
     response: str
+
+    intent: str  # relevant | chitchat | irrelevant
 
 
 # HELPER FUNCTIONS
@@ -92,17 +97,79 @@ def _format_citations(docs: list[Document]) -> str:
         section = doc.metadata.get("section", "unknown")
         source = doc.metadata.get("source", "")
 
-        key = f"{source}|{page}|{section.strip('/')}"
+        key = f"{source}|{page}|{section}"
         if key in seen:
             continue
         seen.add(key)
 
         citation = f"📄 **{source}** — Page {page}"
         if section:
-            citation += f", Section: _{section.strip('/')}_"
+            citation += f", Section: _{section}_"
         citations.append(citation)
 
     return "\n".join(citations)
+
+
+# =========================
+# NODE 0 — CLASSIFIER
+# =========================
+def make_classify_node(llm: ChatOpenAI):
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a classifier for an iPhone assistant.\n"
+         "Classify the query into ONE word:\n"
+         "- relevant (iPhone related)\n"
+         "- chitchat (greetings/small talk)\n"
+         "- irrelevant (not about iPhone)\n\n"
+         "Return ONLY one word."),
+        ("human", "{question}")
+    ])
+
+    chain = prompt | llm
+
+    async def classify(state: RAGState) -> dict:
+        result = await chain.ainvoke({"question": state["question"]})
+        intent = result.content.strip().lower()
+
+        if intent not in {"relevant", "chitchat", "irrelevant"}:
+            intent = "relevant"
+
+        logger.info(f"[classify] intent: {intent}")
+
+        return {"intent": intent}
+
+    return classify
+
+
+# =========================
+# NODE — DIRECT RESPONSE
+# =========================
+def make_direct_answer_node(llm: ChatOpenAI):
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a friendly iPhone assistant.\n"
+         "- If greeting → greet back briefly\n"
+         "- If chitchat → respond briefly and steer to iPhone help\n"
+         "- If irrelevant → politely refuse and say you only help with iPhones"),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{question}")
+    ])
+
+    chain = prompt | llm
+
+    async def direct_answer(state: RAGState) -> dict:
+        logger.info("[direct_answer] skipping retrieval")
+
+        response = await chain.ainvoke({
+            "question": state["question"],
+            "history": state["history"],
+        })
+
+        return {"response": response.content}
+
+    return direct_answer
 
 
 # NODE 1 — RETRIEVE
@@ -118,6 +185,7 @@ def make_retrieve_node(retriever: QdrantRerankedRetriever):
         retrieve(async function): An async function that takes the current RAGState, performs retrieval, 
         and returns an updated state with retrieved documents and formatted context.
     """
+
     async def retrieve(state: RAGState) -> dict:
         
         logger.info(f"[retrieve] Query: {state['question']}")
@@ -128,10 +196,7 @@ def make_retrieve_node(retriever: QdrantRerankedRetriever):
         logger.info(f"[retrieve] docs: {len(docs)}")
         logger.info(f"[retrieve] context preview: {context[:200]}")
 
-        return {
-            "docs": docs,
-            "context": context,
-        }
+        return {"docs": docs, "context": context}
 
     return retrieve
 
@@ -167,8 +232,6 @@ def make_generate_node(llm: ChatOpenAI):
 
     async def generate(state: RAGState) -> dict:
         logger.info("[generate] running LLM")
-        logger.info(f"[generate] context exists: {bool(state.get('context'))}")
-        logger.info(f"[generate] context preview:\n{state.get('context', '')[:300]}")
 
         response = await chain.ainvoke({
             "context": state.get("context", ""),
@@ -182,6 +245,9 @@ def make_generate_node(llm: ChatOpenAI):
 
 
 # NODE 3 — CITATION
+# =========================
+# NODE 3 — CITE
+# =========================
 def cite(state: RAGState) -> dict:
     """
     Final node that takes the generated answer and the retrieved documents from the state,
@@ -203,18 +269,29 @@ def cite(state: RAGState) -> dict:
     return {"response": response}
 
 
+# =========================
+# ROUTER
+# =========================
+def route(state: RAGState) -> str:
+    if state.get("intent") == "relevant":
+        return "retrieve"
+    return "direct_answer"
+
+
 # GRAPH WRAPPER
 class RAGChain:
     def __init__(self, retriever: QdrantRerankedRetriever):
         self.logger = get_logger(self.__class__.__name__)
         self._retriever = retriever
-        self._graph = self._build_graph(retriever)
+
         self._llm = ChatOpenAI(
             model=CHAT_MODEL_NAME,
             temperature=CHAT_TEMPERATURE,
             api_key=OPENAI_API_KEY,
             streaming=True,
         )
+
+        self._graph = self._build_graph(retriever)
 
     def _build_graph(self, retriever):
         """
@@ -236,19 +313,36 @@ class RAGChain:
 
         graph = StateGraph(RAGState)
 
+        graph.add_node("classify", make_classify_node(self._llm))
         graph.add_node("retrieve", make_retrieve_node(retriever))
-        graph.add_node("generate", make_generate_node(llm))
+        graph.add_node("generate", make_generate_node(self._llm))
         graph.add_node("cite", cite)
+        graph.add_node("direct_answer", make_direct_answer_node(self._llm))
 
-        graph.set_entry_point("retrieve")
+        graph.set_entry_point("classify")
+
+        graph.add_conditional_edges(
+            "classify",
+            route,
+            {
+                "retrieve": "retrieve",
+                "direct_answer": "direct_answer",
+            },
+        )
+
         graph.add_edge("retrieve", "generate")
         graph.add_edge("generate", "cite")
         graph.add_edge("cite", END)
+
+        graph.add_edge("direct_answer", END)
 
         return graph.compile()
 
  
     # FULL INVOCATION
+    # =========================
+    # STANDARD INVOKE
+    # =========================
     async def ainvoke(self, query: str, memory: SessionMemory) -> str:
         """
         Runs the full LangGraph pipeline and return the complete
@@ -273,6 +367,9 @@ class RAGChain:
         
         # Run the graph with the initial state and await the final state after processing through all nodes
         final_state = await self._graph.ainvoke(initial_state) 
+
+        final_state = await self._graph.ainvoke(initial_state)
+
         response = final_state["response"]
 
         memory.add_user_message(query)
@@ -281,6 +378,9 @@ class RAGChain:
         return response
 
     # STREAMING INVOKE
+    # =========================
+    # STREAMING
+    # =========================
     async def astream(self, query: str, memory: SessionMemory) -> AsyncIterator[str]:
         """
         Stream response tokens one by one to the UI.
@@ -304,10 +404,39 @@ class RAGChain:
         self.logger.info(f"[astream] Query: {query}")
 
         # Step 1: retrieve (same logic as graph node) 
+
+        # classify first
+        classifier = make_classify_node(self._llm)
+        intent_result = await classifier({
+            "question": query,
+            "history": memory.get_messages()
+        })
+
+        intent = intent_result["intent"]
+        logger.info(f"[astream] intent: {intent}")
+
+        # ── DIRECT PATH ──
+        if intent != "relevant":
+            direct_node = make_direct_answer_node(self._llm)
+
+            result = await direct_node({
+                "question": query,
+                "history": memory.get_messages()
+            })
+
+            text = result["response"]
+
+            for char in text:
+                yield char
+
+            memory.add_user_message(query)
+            memory.add_ai_message(text)
+            return
+
+        # ── RAG PATH ──
         docs = await self._retriever.ainvoke(query)
         context = _format_context(docs)
         citations = _format_citations(docs)
-        self.logger.info(f"[astream] Retrieved {len(docs)} docs")
 
         # Step 2: build prompt chain 
         prompt = ChatPromptTemplate.from_messages([
@@ -319,11 +448,12 @@ class RAGChain:
              "QUESTION:\n{question}")
         ])
 
-        stream_chain = prompt | self._llm
+        chain = prompt | self._llm
 
         # Step 3: stream LLM tokens
         full_answer = ""
-        async for chunk in stream_chain.astream({
+
+        async for chunk in chain.astream({
             "context": context,
             "question": query,
             "history": memory.get_messages(),
@@ -340,10 +470,9 @@ class RAGChain:
 
         # Step 5: update memory with the complete response after streaming finishes
         full_response = full_answer + citation_block
+
         memory.add_user_message(query)
         memory.add_ai_message(full_response)
-
-        self.logger.info("[astream] Streaming complete")
 
 
 # ENTRY POINT
