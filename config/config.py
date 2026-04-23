@@ -38,13 +38,18 @@ LLAMA_PARSE_TIER = "agentic"        # agentic | cost_effective | fast
 LLAMA_PARSE_LANGUAGE = "en"
 
 #Chunking parameters
-CHUNK_SIZE = 512
+# Since the document is parsed and split based on markdown sections, 
+# only long sections will be chunked based on these parameters.
+# The chunking strategy is a simple sliding window with overlap, 
+# which helps maintain context across chunks, having these default values for this case
+# should work well for most long sections.
+CHUNK_SIZE = 512 
 CHUNK_OVERLAP = 64 
 
 #Retrieval with Reranking Configurations
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
-RETRIEVAL_TOP_K = 10
-RERANKER_TOP_N = 5
+RETRIEVAL_TOP_K = 10 # Number of initial candidates retrieved from the vector store before reranking
+RERANKER_TOP_N = 5 # Number of top candidates to return after reranking
 
 #Data configurations
 DATA_DIR = "data\\iPhone User Guide 2.pdf"
@@ -133,9 +138,4 @@ The provided context is a set of 5 sections from Apple's official iphone user gu
     Conversation history: []
     Context: [No relevant sections about unclear queries]
     Response: "Could you please provide more details or ask a specific question about your iphone?"
-"""
-
-CITATION_INSTRUCTION = """
-Always end your answer before the sources block. \
-Do not reproduce the chunk headers in your answer.
 """
